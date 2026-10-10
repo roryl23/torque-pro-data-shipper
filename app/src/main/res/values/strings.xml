@@ -7,6 +7,16 @@
     <string name="api_key_header_label">API key header name</string>
     <string name="interval_label">Sample interval in seconds</string>
     <string name="json_template_label">JSON wrapper template (optional; blank sends the original JSON). Include exactly one \"{{document}}\" string value.</string>
+    <string name="wifi_only_label">Send only over Wi-Fi</string>
+    <string name="wifi_ssid_label">Wi-Fi network name (SSID; optional)</string>
+    <string name="wifi_ssid_hint">Blank allows any Wi-Fi; or enter a network name</string>
+    <string name="use_connected_wifi">Use currently connected Wi-Fi network</string>
+    <string name="wifi_location_notice">For a specific network, allow precise location and turn on device Location services so Android can reveal the connected Wi-Fi name. If either is unavailable, shipping pauses until the name can be verified. You can enter a network name even while disconnected.</string>
+    <string name="wifi_location_permission_denied">Precise location permission is needed to verify a specific Wi-Fi network. Shipping to that network stays paused until permission is granted.</string>
+    <string name="wifi_location_disabled">Turn on device Location services to identify the connected Wi-Fi network. Shipping to a specific network stays paused until then.</string>
+    <string name="wifi_not_connected">Connect to Wi-Fi to select its network name, or enter the name manually.</string>
+    <string name="wifi_ssid_unavailable">Android cannot reveal this Wi-Fi network name. Check precise location permission and Location services, or enter a network name manually.</string>
+    <string name="wifi_start_permission">Allow precise location, then tap Start again to ship to this specific Wi-Fi network.</string>
     <string name="json_template_hint">{\"meta\":{\"fleet\":\"north\"},\"payload\":\"{{document}}\"}</string>
     <string name="invalid_json_template">Invalid JSON template: %1$s</string>
     <string name="save_button">Save settings</string>

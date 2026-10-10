@@ -8,6 +8,9 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
@@ -15,6 +18,7 @@ import android.os.IBinder;
 import android.os.Looper;
 
 import com.roryl23.torqueshipper.delivery.DeliveryQueue;
+import com.roryl23.torqueshipper.delivery.WifiDeliveryGate;
 import com.roryl23.torqueshipper.template.JsonTemplate;
 import com.roryl23.torqueshipper.torque.TorqueReader;
 
@@ -39,6 +43,8 @@ public final class CollectionService extends Service {
     static final String API_KEY_HEADER = "api_key_header";
     static final String INTERVAL_SECONDS = "interval_seconds";
     static final String JSON_TEMPLATE = "json_template";
+    static final String WIFI_ONLY = "wifi_only";
+    static final String WIFI_SSID = "wifi_ssid";
 
     private static final String CHANNEL_ID = "torque_shipper_collection";
     private static final int NOTIFICATION_ID = 1;
@@ -65,6 +71,8 @@ public final class CollectionService extends Service {
     private ScheduledFuture<?> periodicTask;
     private TorqueReader reader;
     private DeliveryQueue queue;
+    private WifiDeliveryGate deliveryGate;
+    private ConnectivityManager.NetworkCallback networkCallback;
     private volatile boolean running;
     private volatile long generation;
     private boolean torqueConnected;
@@ -103,6 +111,8 @@ public final class CollectionService extends Service {
         String key = settings.getString(API_KEY, "");
         String header = settings.getString(API_KEY_HEADER, "X-API-Key");
         int seconds = settings.getInt(INTERVAL_SECONDS, 5);
+        boolean wifiOnly = settings.getBoolean(WIFI_ONLY, false);
+        String wifiSsid = settings.getString(WIFI_SSID, "");
         JsonTemplate template;
         try {
             template = JsonTemplate.compile(settings.getString(JSON_TEMPLATE, ""));
@@ -121,6 +131,7 @@ public final class CollectionService extends Service {
             return START_NOT_STICKY;
         }
 
+        deliveryGate = new WifiDeliveryGate(this, wifiOnly, wifiSsid);
         long runGeneration = ++generation;
         TorqueReader activeReader = new TorqueReader(this);
         reader = activeReader;
@@ -135,6 +146,7 @@ public final class CollectionService extends Service {
             startForeground(NOTIFICATION_ID, notification(getString(R.string.notification_starting)));
         }
         publishStatus();
+        watchConnectivity(runGeneration);
         sampler.execute(() -> {
             if (running && generation == runGeneration) {
                 activeReader.start(() -> updateTorqueConnection(true, runGeneration),
@@ -185,17 +197,18 @@ public final class CollectionService extends Service {
         flushRequested.set(true);
         if (flushRunning.compareAndSet(false, true)) {
             long runGeneration = generation;
-            uploader.execute(() -> flushQueue(runGeneration));
+            WifiDeliveryGate runGate = deliveryGate;
+            uploader.execute(() -> flushQueue(runGeneration, runGate));
         }
     }
 
-    private void flushQueue(long runGeneration) {
+    private void flushQueue(long runGeneration, WifiDeliveryGate runGate) {
         try {
             int posted;
             do {
                 if (!running || generation != runGeneration) return;
                 flushRequested.set(false);
-                posted = queue.flush();
+                posted = queue.flush(runGate);
                 int count = queue.pendingCount();
                 mainHandler.post(() -> {
                     if (!running || generation != runGeneration) return;
@@ -215,6 +228,38 @@ public final class CollectionService extends Service {
             // A sample could arrive as the previous upload finishes, or a new run may
             // begin before this worker completes. Hand off that request without overlap.
             if (running && flushRequested.get()) requestFlush();
+        }
+    }
+
+    private void watchConnectivity(long runGeneration) {
+        ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
+        if (connectivity == null) return;
+        WifiDeliveryGate runGate = deliveryGate;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                drainIfEligible();
+            }
+
+            @Override
+            public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                drainIfEligible();
+            }
+
+            private void drainIfEligible() {
+                if (running && generation == runGeneration && runGate.isEligible()) {
+                    requestFlush();
+                }
+            }
+        };
+        connectivity.registerDefaultNetworkCallback(networkCallback);
+    }
+
+    private void stopWatchingConnectivity() {
+        ConnectivityManager.NetworkCallback callback = networkCallback;
+        networkCallback = null;
+        if (callback != null) {
+            getSystemService(ConnectivityManager.class).unregisterNetworkCallback(callback);
         }
     }
 
@@ -281,6 +326,7 @@ public final class CollectionService extends Service {
             running = false;
             ++generation;
             flushRequested.set(false);
+            stopWatchingConnectivity();
             if (periodicTask != null) periodicTask.cancel(false);
             if (reader != null) reader.close();
             stopForeground(STOP_FOREGROUND_REMOVE);
@@ -304,6 +350,7 @@ public final class CollectionService extends Service {
     public void onDestroy() {
         running = false;
         ++generation;
+        stopWatchingConnectivity();
         flushRequested.set(false);
         if (periodicTask != null) periodicTask.cancel(false);
         if (reader != null) reader.close();

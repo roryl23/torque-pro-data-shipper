@@ -54,6 +54,10 @@ public final class DeliveryQueue {
 
     private final File directory;
     private final QueueState state;
+    /** Selects the transport anew for each document, after the preceding HTTP request. */
+    public interface Transport {
+        HttpURLConnection open(URL endpoint) throws IOException;
+    }
 
     public DeliveryQueue(Context context) {
         directory = new File(context.getFilesDir(), "delivery-queue");
@@ -155,7 +159,7 @@ public final class DeliveryQueue {
     }
 
     /** Posts up to eight oldest entries, stopping on the first failure and retaining it for retry. */
-    public int flush() {
+    public int flush(Transport transport) {
         // Only a delivery worker may post/delete. Enqueue can commit snapshots while HTTP
         // waits on the network; its atomic rename makes newly listed entries immutable.
         synchronized (state.flushLock) {
@@ -177,7 +181,7 @@ public final class DeliveryQueue {
                     String apiKey = entry.getString("apiKey");
                     checkedKey(apiKey);
                     String body = entry.getString("body");
-                    if (!post(endpoint, header, apiKey, body)) {
+                    if (!post(transport, endpoint, header, apiKey, body)) {
                         break;
                     }
                     // An exit after HTTP success but before durable removal can replay the
@@ -261,9 +265,9 @@ public final class DeliveryQueue {
         return new JSONObject(new String(bytes, StandardCharsets.UTF_8));
     }
 
-    private static boolean post(URL endpoint, String header, String apiKey, String body)
-            throws IOException {
-        HttpURLConnection connection = (HttpURLConnection) endpoint.openConnection();
+    private static boolean post(Transport transport, URL endpoint, String header, String apiKey,
+                                String body) throws IOException {
+        HttpURLConnection connection = transport.open(endpoint);
         try {
             connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout(CONNECT_TIMEOUT_MS);

@@ -8,6 +8,11 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.location.LocationManager;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -18,6 +23,7 @@ import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
+import android.widget.Switch;
 import android.widget.Toast;
 
 import com.roryl23.torqueshipper.delivery.DeliveryQueue;
@@ -29,12 +35,19 @@ import java.net.URISyntaxException;
 
 public final class MainActivity extends Activity {
     private static final int NOTIFICATION_PERMISSION_REQUEST = 1;
+    private static final int WIFI_LOCATION_PERMISSION_REQUEST = 2;
+    private static final String WIFI_ONLY = "wifi_only";
+    private static final String WIFI_SSID = "wifi_ssid";
 
     private EditText endpoint;
     private EditText apiKey;
     private EditText apiKeyHeader;
     private EditText intervalSeconds;
     private EditText jsonTemplate;
+    private Switch wifiOnly;
+    private EditText wifiSsid;
+    private Button useConnectedWifi;
+    private boolean selectingConnectedWifi;
     private TextView status;
     private TextView httpWarning;
     private Button startButton;
@@ -90,6 +103,9 @@ public final class MainActivity extends Activity {
         apiKeyHeader = findViewById(R.id.api_key_header);
         intervalSeconds = findViewById(R.id.interval_seconds);
         jsonTemplate = findViewById(R.id.json_template);
+        wifiOnly = findViewById(R.id.wifi_only);
+        wifiSsid = findViewById(R.id.wifi_ssid);
+        useConnectedWifi = findViewById(R.id.use_connected_wifi);
         httpWarning = findViewById(R.id.http_warning);
         status = findViewById(R.id.status);
         startButton = findViewById(R.id.start);
@@ -100,6 +116,15 @@ public final class MainActivity extends Activity {
         apiKey.setText(settings.getString(CollectionService.API_KEY, ""));
         apiKeyHeader.setText(settings.getString(CollectionService.API_KEY_HEADER, "X-API-Key"));
         intervalSeconds.setText(String.valueOf(settings.getInt(CollectionService.INTERVAL_SECONDS, 5)));
+        wifiOnly.setChecked(settings.getBoolean(WIFI_ONLY, false));
+        wifiSsid.setText(settings.getString(WIFI_SSID, ""));
+        wifiOnly.setOnCheckedChangeListener((button, checked) -> {
+            wifiSsid.setEnabled(checked);
+            useConnectedWifi.setEnabled(checked);
+        });
+        wifiSsid.setEnabled(wifiOnly.isChecked());
+        useConnectedWifi.setEnabled(wifiOnly.isChecked());
+        useConnectedWifi.setOnClickListener(view -> selectConnectedWifi());
         jsonTemplate.setText(settings.getString(CollectionService.JSON_TEMPLATE, ""));
         endpoint.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -148,12 +173,90 @@ public final class MainActivity extends Activity {
         return bound;
     }
 
+    private void selectConnectedWifi() {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            requestWifiLocationPermission(true);
+            return;
+        }
+        if (!isLocationEnabled()) {
+            Toast.makeText(this, R.string.wifi_location_disabled, Toast.LENGTH_LONG).show();
+            return;
+        }
+        ConnectivityManager connectivity = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(connectivity.getActiveNetwork());
+        if (capabilities == null || !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            Toast.makeText(this, R.string.wifi_not_connected, Toast.LENGTH_LONG).show();
+            return;
+        }
+        String ssid;
+        if (Build.VERSION.SDK_INT >= 31) {
+            Object transport = capabilities.getTransportInfo();
+            ssid = transport instanceof WifiInfo ? ((WifiInfo) transport).getSSID() : null;
+        } else {
+            ssid = null;
+        }
+        if (isUnavailableSsid(ssid)) {
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+            WifiInfo info = wifi == null ? null : wifi.getConnectionInfo();
+            ssid = info == null ? null : info.getSSID();
+        }
+        NetworkCapabilities current = connectivity.getNetworkCapabilities(connectivity.getActiveNetwork());
+        if (current == null || !current.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            Toast.makeText(this, R.string.wifi_not_connected, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (isUnavailableSsid(ssid)) {
+            Toast.makeText(this, R.string.wifi_ssid_unavailable, Toast.LENGTH_LONG).show();
+            return;
+        }
+        // Android wraps reported SSIDs in quotes; manually entered names are kept as typed.
+        if (ssid.length() >= 2 && ssid.charAt(0) == '"' && ssid.charAt(ssid.length() - 1) == '"') {
+            ssid = ssid.substring(1, ssid.length() - 1);
+        }
+        if (ssid.isEmpty()) {
+            Toast.makeText(this, R.string.wifi_ssid_unavailable, Toast.LENGTH_LONG).show();
+            return;
+        }
+        wifiSsid.setText(ssid);
+    }
+
+    private static boolean isUnavailableSsid(String ssid) {
+        return ssid == null || ssid.isEmpty() || WifiManager.UNKNOWN_SSID.equals(ssid)
+                || "<unknown ssid>".equalsIgnoreCase(ssid);
+    }
+
+    private boolean isLocationEnabled() {
+        LocationManager location = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (location == null) return false;
+        if (Build.VERSION.SDK_INT >= 28) return location.isLocationEnabled();
+        return location.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                || location.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+    }
+
+    private boolean needsWifiLocationPermission() {
+        return wifiOnly.isChecked() && !wifiSsid.getText().toString().isEmpty()
+                && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestWifiLocationPermission() {
+        requestWifiLocationPermission(false);
+    }
+
+    private void requestWifiLocationPermission(boolean selectingWifi) {
+        selectingConnectedWifi = selectingWifi;
+        requestPermissions(new String[]{
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION
+        }, WIFI_LOCATION_PERMISSION_REQUEST);
+    }
+
     private boolean saveSettings(boolean showConfirmation) {
         String url = endpoint.getText().toString().trim();
         String key = apiKey.getText().toString();
         String header = apiKeyHeader.getText().toString().trim();
         String secondsText = intervalSeconds.getText().toString().trim();
         String templateText = jsonTemplate.getText().toString();
+        String selectedWifiSsid = wifiSsid.getText().toString();
         try {
             URI parsed = new URI(url);
             if (!("https".equalsIgnoreCase(parsed.getScheme())
@@ -205,12 +308,15 @@ public final class MainActivity extends Activity {
                 .putString(CollectionService.API_KEY_HEADER, header)
                 .putInt(CollectionService.INTERVAL_SECONDS, seconds)
                 .putString(CollectionService.JSON_TEMPLATE, templateText)
+                .putBoolean(WIFI_ONLY, wifiOnly.isChecked())
+                .putString(WIFI_SSID, selectedWifiSsid)
                 .commit();
         if (!saved) {
             Toast.makeText(this, R.string.settings_save_failed, Toast.LENGTH_SHORT).show();
             return false;
         }
         if (showConfirmation) Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show();
+        if (needsWifiLocationPermission()) requestWifiLocationPermission();
         return true;
     }
 
@@ -228,6 +334,10 @@ public final class MainActivity extends Activity {
 
     private void startCollection() {
         if (!saveSettings(false)) return;
+        if (needsWifiLocationPermission()) {
+            Toast.makeText(this, R.string.wifi_start_permission, Toast.LENGTH_LONG).show();
+            return;
+        }
         try {
             Intent startIntent = new Intent(this, CollectionService.class).setAction(CollectionService.ACTION_START);
             startForegroundService(startIntent);
@@ -259,6 +369,15 @@ public final class MainActivity extends Activity {
         if (requestCode == NOTIFICATION_PERMISSION_REQUEST
                 && (grantResults.length == 0 || grantResults[0] != PackageManager.PERMISSION_GRANTED)) {
             Toast.makeText(this, R.string.notifications_denied, Toast.LENGTH_LONG).show();
+        } else if (requestCode == WIFI_LOCATION_PERMISSION_REQUEST) {
+            boolean granted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                    == PackageManager.PERMISSION_GRANTED;
+            if (!granted) {
+                Toast.makeText(this, R.string.wifi_location_permission_denied, Toast.LENGTH_LONG).show();
+            } else if (selectingConnectedWifi) {
+                selectConnectedWifi();
+            }
+            selectingConnectedWifi = false;
         }
     }
 }
