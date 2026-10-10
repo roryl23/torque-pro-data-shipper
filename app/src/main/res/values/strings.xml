@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Torque Shipper</string>
+    <string name="endpoint_label">POST endpoint URL (http:// or https://)</string>
+    <string name="api_key_label">API key</string>
+    <string name="insecure_http_warning">HTTP sends your API key and vehicle data without encryption. Prefer HTTPS.</string>
+    <string name="api_key_header_label">API key header name</string>
+    <string name="interval_label">Sample interval in seconds</string>
+    <string name="json_template_label">JSON wrapper template (optional; blank sends the original JSON). Include exactly one \"{{document}}\" string value.</string>
+    <string name="json_template_hint">{\"meta\":{\"fleet\":\"north\"},\"payload\":\"{{document}}\"}</string>
+    <string name="invalid_json_template">Invalid JSON template: %1$s</string>
+    <string name="save_button">Save settings</string>
+    <string name="start_button">Start shipping</string>
+    <string name="stop_button">Stop shipping</string>
+    <string name="settings_restart_notice">Changes saved during collection apply after you stop and restart shipping.</string>
+    <string name="status_stopped">Stopped</string>
+    <string name="status_starting">Starting…</string>
+    <string name="status_running">Running; Torque %1$s; queued documents: %2$s</string>
+    <string name="status_connected">connected</string>
+    <string name="status_disconnected">disconnected</string>
+    <string name="status_error">Last tick error: %1$s</string>
+    <string name="settings_saved">Settings saved</string>
+    <string name="settings_save_failed">Unable to save settings on this device.</string>
+    <string name="invalid_endpoint">Enter a valid http:// or https:// URL with a host.</string>
+    <string name="invalid_api_key">Enter an API key.</string>
+    <string name="invalid_header">Enter a valid HTTP header name.</string>
+    <string name="invalid_configuration">The URL, API key, or custom header is not supported. Check your settings.</string>
+    <string name="invalid_interval">Interval must be a whole number from 1 to 86400 seconds.</string>
+    <string name="android_limit_notice">Android 15+ limits data-sync foreground services to six hours in a 24-hour period. Reopen the app to restart when Android stops collection.</string>
+    <string name="status_time_limit">Stopped: Android foreground-service time limit reached. Reopen the app to restart.</string>
+    <string name="notification_title">Torque Shipper running</string>
+    <string name="notification_starting">Waiting for first sample</string>
+    <string name="notification_running">Torque %1$s · %2$s queued</string>
+    <string name="notification_stop">Stop</string>
+    <string name="notifications_denied">Notifications are disabled; Android may hide the persistent service notification.</string>
+    <string name="start_failed">Unable to start foreground service: %1$s</string>
+</resources>
