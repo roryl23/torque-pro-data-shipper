@@ -184,7 +184,7 @@ public final class DeliveryQueue {
                     if (!post(transport, endpoint, header, apiKey, body)) {
                         break;
                     }
-                    // An exit after HTTP success but before durable removal can replay the
+                    // A 200 acknowledgment followed by an exit before durable removal can replay the
                     // document. Never advance if unlink fails; sync the unlink before the
                     // next request to minimize replay even after a device power failure.
                     if (!file.delete()) {
@@ -282,7 +282,7 @@ public final class DeliveryQueue {
                 output.write(payload);
             }
             int status = connection.getResponseCode();
-            return status >= 200 && status < 300;
+            return status == HttpURLConnection.HTTP_OK;
         } finally {
             connection.disconnect();
         }

@@ -33,6 +33,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class CollectionService extends Service {
     public static final String ACTION_START = "com.roryl23.torqueshipper.START";
@@ -68,7 +69,10 @@ public final class CollectionService extends Service {
     private ExecutorService uploader;
     private final AtomicBoolean flushRunning = new AtomicBoolean();
     private final AtomicBoolean flushRequested = new AtomicBoolean();
+    // Negative: active run without a failed drain; positive: that run has retained entries.
+    private final AtomicLong retryGeneration = new AtomicLong();
     private ScheduledFuture<?> periodicTask;
+    private ScheduledFuture<?> retryTask;
     private TorqueReader reader;
     private DeliveryQueue queue;
     private WifiDeliveryGate deliveryGate;
@@ -137,6 +141,7 @@ public final class CollectionService extends Service {
         reader = activeReader;
         torqueConnected = false;
         running = true;
+        retryGeneration.set(-runGeneration);
         stoppedDescription = null;
         lastError = null;
         if (Build.VERSION.SDK_INT >= 29) {
@@ -156,6 +161,12 @@ public final class CollectionService extends Service {
         periodicTask = sampler.scheduleAtFixedRate(
                 () -> tick(endpoint, key, header, template, activeReader, runGeneration),
                 0, seconds, TimeUnit.SECONDS);
+        retryTask = sampler.scheduleAtFixedRate(() -> {
+            if (running && generation == runGeneration && retryGeneration.get() == runGeneration
+                    && !flushRunning.get()) {
+                requestFlush(runGeneration);
+            }
+        }, 5, 5, TimeUnit.SECONDS);
         return START_NOT_STICKY;
     }
 
@@ -175,7 +186,7 @@ public final class CollectionService extends Service {
             error = e.getClass().getSimpleName();
         }
         if (!running || generation != runGeneration) return;
-        requestFlush();
+        requestFlush(runGeneration);
         int pending;
         try {
             pending = queue.pendingCount();
@@ -193,12 +204,21 @@ public final class CollectionService extends Service {
         });
     }
 
-    private void requestFlush() {
+    private void requestFlush(long runGeneration) {
+        if (!running || generation != runGeneration) return;
         flushRequested.set(true);
         if (flushRunning.compareAndSet(false, true)) {
-            long runGeneration = generation;
             WifiDeliveryGate runGate = deliveryGate;
             uploader.execute(() -> flushQueue(runGeneration, runGate));
+        }
+    }
+
+    private void markRetryNeeded(int count, long runGeneration) {
+        // Compare against this run's own state so a finishing worker cannot change a newer run.
+        if (count == 0) {
+            retryGeneration.compareAndSet(runGeneration, -runGeneration);
+        } else {
+            retryGeneration.compareAndSet(-runGeneration, runGeneration);
         }
     }
 
@@ -210,6 +230,7 @@ public final class CollectionService extends Service {
                 flushRequested.set(false);
                 posted = queue.flush(runGate);
                 int count = queue.pendingCount();
+                markRetryNeeded(count, runGeneration);
                 mainHandler.post(() -> {
                     if (!running || generation != runGeneration) return;
                     queuedCount = count;
@@ -217,6 +238,13 @@ public final class CollectionService extends Service {
                 });
             } while (posted == 8 || flushRequested.get());
         } catch (RuntimeException e) {
+            int count;
+            try {
+                count = queue.pendingCount();
+            } catch (RuntimeException unreadable) {
+                count = -1;
+            }
+            markRetryNeeded(count, runGeneration);
             String error = e.getClass().getSimpleName();
             mainHandler.post(() -> {
                 if (!running || generation != runGeneration) return;
@@ -227,7 +255,7 @@ public final class CollectionService extends Service {
             flushRunning.set(false);
             // A sample could arrive as the previous upload finishes, or a new run may
             // begin before this worker completes. Hand off that request without overlap.
-            if (running && flushRequested.get()) requestFlush();
+            if (running && flushRequested.get()) requestFlush(generation);
         }
     }
 
@@ -248,7 +276,7 @@ public final class CollectionService extends Service {
 
             private void drainIfEligible() {
                 if (running && generation == runGeneration && runGate.isEligible()) {
-                    requestFlush();
+                    requestFlush(runGeneration);
                 }
             }
         };
@@ -325,9 +353,11 @@ public final class CollectionService extends Service {
         if (running) {
             running = false;
             ++generation;
+            retryGeneration.set(0);
             flushRequested.set(false);
             stopWatchingConnectivity();
             if (periodicTask != null) periodicTask.cancel(false);
+            if (retryTask != null) retryTask.cancel(false);
             if (reader != null) reader.close();
             stopForeground(STOP_FOREGROUND_REMOVE);
         }
@@ -350,9 +380,11 @@ public final class CollectionService extends Service {
     public void onDestroy() {
         running = false;
         ++generation;
+        retryGeneration.set(0);
         stopWatchingConnectivity();
         flushRequested.set(false);
         if (periodicTask != null) periodicTask.cancel(false);
+        if (retryTask != null) retryTask.cancel(false);
         if (reader != null) reader.close();
         publishStatus();
         // Let a snapshot already being written finish its atomic enqueue.
