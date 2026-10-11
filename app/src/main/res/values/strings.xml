@@ -22,7 +22,7 @@
     <string name="save_button">Save settings</string>
     <string name="start_button">Start shipping</string>
     <string name="stop_button">Stop shipping</string>
-    <string name="settings_restart_notice">Changes saved during collection apply after you stop and restart shipping.</string>
+    <string name="settings_restart_notice">Endpoint changes apply to the next delivery attempt; other changes require restarting shipping.</string>
     <string name="status_stopped">Stopped</string>
     <string name="status_starting">Starting…</string>
     <string name="status_running">Running; Torque %1$s; queued documents: %2$s</string>

@@ -159,7 +159,7 @@ public final class CollectionService extends Service {
             }
         });
         periodicTask = sampler.scheduleAtFixedRate(
-                () -> tick(endpoint, key, header, template, activeReader, runGeneration),
+                () -> tick(key, header, template, activeReader, runGeneration),
                 0, seconds, TimeUnit.SECONDS);
         retryTask = sampler.scheduleAtFixedRate(() -> {
             if (running && generation == runGeneration && retryGeneration.get() == runGeneration
@@ -170,16 +170,18 @@ public final class CollectionService extends Service {
         return START_NOT_STICKY;
     }
 
-    private void tick(String endpoint, String key, String header, JsonTemplate template,
+    private void tick(String key, String header, JsonTemplate template,
                       TorqueReader activeReader, long runGeneration) {
         if (!running || generation != runGeneration) return;
         String error = null;
         try {
             synchronized (SAMPLE_LOCK) {
                 if (!running || generation != runGeneration) return;
-                JSONObject document = template.render(activeReader.snapshot(System.currentTimeMillis()));
-                // A started tick owns its completed sample even if Stop arrived during snapshot().
-                queue.enqueue(endpoint, key, header, document);
+                JSONObject snapshot = activeReader.snapshot(System.currentTimeMillis());
+                if (snapshot.optBoolean("connected", false)) {
+                    // A started tick owns its completed sample even if Stop arrived during snapshot().
+                    queue.enqueue(key, header, template.render(snapshot));
+                }
             }
         } catch (IOException | RuntimeException e) {
             // Deliberately never include URLs, HTTP exceptions' messages, or API keys in UI/notifications.
@@ -228,7 +230,8 @@ public final class CollectionService extends Service {
             do {
                 if (!running || generation != runGeneration) return;
                 flushRequested.set(false);
-                posted = queue.flush(runGate);
+                String endpoint = getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(ENDPOINT, "");
+                posted = queue.flush(endpoint, runGate);
                 int count = queue.pendingCount();
                 markRetryNeeded(count, runGeneration);
                 mainHandler.post(() -> {

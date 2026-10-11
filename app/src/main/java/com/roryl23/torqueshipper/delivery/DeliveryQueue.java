@@ -14,6 +14,7 @@ import java.io.FileFilter;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
@@ -66,7 +67,7 @@ public final class DeliveryQueue {
         }
     }
 
-    /** Validates exactly the destination/credential rules used before an entry is persisted. */
+    /** Validates the configured delivery destination and queued credential fields. */
     public static void validateConfiguration(String endpoint, String apiKey, String apiKeyHeader)
             throws IOException {
         checkedEndpoint(endpoint);
@@ -74,17 +75,16 @@ public final class DeliveryQueue {
         checkedKey(apiKey);
     }
 
-    /** Persists the document before returning. Endpoint and credentials are captured with it. */
-    public void enqueue(String endpoint, String apiKey, String apiKeyHeader,
-                        JSONObject document) throws IOException {
+    /** Persists a document and its credentials, independent of the current destination. */
+    public void enqueue(String apiKey, String apiKeyHeader, JSONObject document)
+            throws IOException {
         synchronized (state.enqueueLock) {
-            enqueueLocked(endpoint, apiKey, apiKeyHeader, document);
+            enqueueLocked(apiKey, apiKeyHeader, document);
         }
     }
 
-    private void enqueueLocked(String endpoint, String apiKey, String apiKeyHeader,
-                               JSONObject document) throws IOException {
-        URL url = checkedEndpoint(endpoint);
+    private void enqueueLocked(String apiKey, String apiKeyHeader, JSONObject document)
+            throws IOException {
         String header = checkedHeader(apiKeyHeader);
         checkedKey(apiKey);
         if (document == null) {
@@ -119,7 +119,6 @@ public final class DeliveryQueue {
         File temporary = new File(directory, ".pending-" + UUID.randomUUID() + ".tmp");
         try {
             JSONObject entry = new JSONObject();
-            entry.put("endpoint", url.toExternalForm());
             entry.put("apiKey", apiKey);
             entry.put("apiKeyHeader", header);
             String body = document.toString();
@@ -158,15 +157,18 @@ public final class DeliveryQueue {
         }
     }
 
-    /** Posts up to eight oldest entries, stopping on the first failure and retaining it for retry. */
-    public int flush(Transport transport) {
+    /** Posts up to eight oldest entries to the supplied destination, stopping at the first failure. */
+    public int flush(String endpoint, Transport transport) {
         // Only a delivery worker may post/delete. Enqueue can commit snapshots while HTTP
         // waits on the network; its atomic rename makes newly listed entries immutable.
         synchronized (state.flushLock) {
             File[] queued;
+            URL destination;
             try {
+                destination = checkedEndpoint(endpoint);
                 queued = entries();
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
+                // Never expose an exception that might contain a credential or destination.
                 return 0;
             }
             int delivered = 0;
@@ -176,12 +178,11 @@ public final class DeliveryQueue {
                 }
                 try {
                     JSONObject entry = readEntry(file);
-                    URL endpoint = checkedEndpoint(entry.getString("endpoint"));
                     String header = checkedHeader(entry.getString("apiKeyHeader"));
                     String apiKey = entry.getString("apiKey");
                     checkedKey(apiKey);
                     String body = entry.getString("body");
-                    if (!post(transport, endpoint, header, apiKey, body)) {
+                    if (!post(transport, destination, header, apiKey, body)) {
                         break;
                     }
                     // A 200 acknowledgment followed by an exit before durable removal can replay the
@@ -302,8 +303,9 @@ public final class DeliveryQueue {
                 throw new IOException("Endpoint must be an HTTP(S) URL without credentials or fragment");
             }
             return uri.toURL();
-        } catch (URISyntaxException | IllegalArgumentException e) {
-            throw new IOException("Invalid delivery endpoint", e);
+        } catch (URISyntaxException | IllegalArgumentException | MalformedURLException e) {
+            // Parser exceptions can contain the supplied URL.
+            throw new IOException("Invalid delivery endpoint");
         }
     }
 
